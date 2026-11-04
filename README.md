@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 
 import argparse
 import hashlib
@@ -8,7 +7,6 @@ import sys
 from pathlib import Path
 
 BASELINE_FILE = Path("integrity_baseline.json")
-
 
 def calculate_hash(file_path):
     """Calculate the SHA-256 hash of a file."""
@@ -20,119 +18,96 @@ def calculate_hash(file_path):
 
     return digest.hexdigest()
 
-
 def scan_directory(directory):
     """Hash regular files without following directory symlinks."""
     results = {}
     root = Path(directory).resolve()
 
-    if not root.is_dir():
-        raise ValueError(f"Not a directory: {root}")
+    if not root.exists():
+        print(f"Error: Directory {root} does not exist")
+        sys.exit(1)
 
-    for current_root, dirs, files in os.walk(root, followlinks=False):
-        dirs[:] = [
-            name for name in dirs
-            if not (Path(current_root) / name).is_symlink()
-        ]
-
-        for name in files:
-            file_path = Path(current_root) / name
-
-            if file_path.is_symlink() or not file_path.is_file():
-                continue
-
-            try:
-                relative_path = str(file_path.relative_to(root))
-                results[relative_path] = calculate_hash(file_path)
-            except (OSError, PermissionError) as error:
-                print(f"[WARNING] Cannot read {file_path}: {error}")
-
+    for path in root.rglob("*"):
+        # Skip directories and symlinks
+        if not path.is_file() or path.is_symlink():
+            continue
+        # Skip the baseline file itself if inside the scanned folder
+        if path.name == BASELINE_FILE.name:
+            continue
+        try:
+            relative = str(path.relative_to(root))
+            results[relative] = calculate_hash(path)
+        except Exception as e:
+            print(f"Skipping {path}: {e}")
+            continue
     return results
 
+def save_baseline(data, output_path):
+    output_path = Path(output_path)
+    with output_path.open("w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, sort_keys=True)
+    print(f"[+] Baseline saved to {output_path} ({len(data)} files)")
 
-def load_baseline():
-    with BASELINE_FILE.open("r", encoding="utf-8") as file:
-        return json.load(file)
+def load_baseline(baseline_path):
+    baseline_path = Path(baseline_path)
+    if not baseline_path.exists():
+        print(f"Error: Baseline file {baseline_path} not found. Run with --create first.")
+        sys.exit(1)
+    with baseline_path.open("r", encoding="utf-8") as f:
+        return json.load(f)
 
+def compare_baselines(current, baseline):
+    added = set(current) - set(baseline)
+    removed = set(baseline) - set(current)
+    modified = {f for f in set(current) & set(baseline) if current[f] != baseline[f]}
 
-def save_baseline(results):
-    temporary_file = BASELINE_FILE.with_suffix(".tmp")
+    if not added and not removed and not modified:
+        print("[OK] No changes detected. Integrity verified.")
+        return
 
-    with temporary_file.open("w", encoding="utf-8") as file:
-        json.dump(results, file, indent=2, sort_keys=True)
-
-    temporary_file.replace(BASELINE_FILE)
-
-
-def compare_results(old, new):
-    old_files = set(old)
-    new_files = set(new)
-
-    for name in sorted(new_files - old_files):
-        print(f"[NEW FILE] {name}")
-
-    for name in sorted(old_files - new_files):
-        print(f"[MISSING FILE] {name}")
-
-    for name in sorted(old_files & new_files):
-        if old[name] != new[name]:
-            print(f"[MODIFIED FILE] {name}")
-
-    if old == new:
-        print("[OK] No file changes detected.")
-
+    if added:
+        print("\n[+] Added files:")
+        for f in sorted(added):
+            print(f"  + {f}")
+    if removed:
+        print("\n[-] Removed files:")
+        for f in sorted(removed):
+            print(f"  - {f}")
+    if modified:
+        print("\n[!] Modified files:")
+        for f in sorted(modified):
+            print(f"  * {f}")
+            print(f"      old: {baseline[f][:16]}... new: {current[f][:16]}...")
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Monitor file integrity using SHA-256."
+        description="File Integrity Monitor - SHA-256 baseline checker",
+        epilog="Example: python integrity.py --create /path/to/folder  or  python integrity.py --check /path/to/folder"
     )
-
-    parser.add_argument(
-        "directory",
-        help="Directory to monitor"
-    )
-
-    parser.add_argument(
-        "--init",
-        action="store_true",
-        help="Create or replace the baseline"
-    )
+    parser.add_argument("directory", help="Directory to scan")
+    parser.add_argument("--create", action="store_true", help="Create new baseline file")
+    parser.add_argument("--check", action="store_true", help="Check against existing baseline")
+    parser.add_argument("--baseline", default=str(BASELINE_FILE), help=f"Baseline file path (default: {BASELINE_FILE})")
 
     args = parser.parse_args()
 
-    try:
-        current = scan_directory(args.directory)
+    if args.create and args.check:
+        parser.error("Use --create OR --check, not both")
 
-        if args.init:
-            save_baseline(current)
-            print(f"[OK] Baseline saved for {len(current)} files.")
-            return
+    # Default action: if no flag, create if baseline doesn't exist else check
+    if not args.create and not args.check:
+        if Path(args.baseline).exists():
+            args.check = True
+        else:
+            args.create = True
 
-        if not BASELINE_FILE.exists():
-            print(
-                "[ERROR] No baseline found. "
-                "Run with --init first.",
-                file=sys.stderr
-            )
-            sys.exit(1)
+    current_scan = scan_directory(args.directory)
 
-        baseline = load_baseline()
-        compare_results(baseline, current)
-
-    except (OSError, ValueError, json.JSONDecodeError) as error:
-        print(f"[ERROR] {error}", file=sys.stderr)
-        sys.exit(1)
-
+    if args.create:
+        save_baseline(current_scan, args.baseline)
+    elif args.check:
+        baseline_data = load_baseline(args.baseline)
+        compare_baselines(current_scan, baseline_data)
 
 if __name__ == "__main__":
     main()
-
-# Disclaimer
-**Notice**
-
-    This project is run on my own virtual box machines and set up. The code in this project can be and should be editied to fit your ip and mac address specifications. Ideal set up is necessary for proper efficeny.
----
-***WARNING***
-
-THIS PROJECT IS NOT USED FOR MALLICIOUS INTENT AND IS AN EDUCATIONAL PROJECT USED TO SHOWCASE MY ABILITIES AS A ETHICAL HACKER.
-IF THIS CODE IS UTILIZED IN ANY FORM OF MALLICIOUS INTENT, BE INFORMED THAT PROPER LEAGAL COURSE OF ACTION CAN BE TAKEN ON THOSE WHO USE IT ,BY LAW ENFORCEMENT AGENCIES.
