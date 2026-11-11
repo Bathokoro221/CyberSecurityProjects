@@ -7,4 +7,4 @@ Projects by Batholomew Okoro — Python & CyberSecurity from Awka, Nigeria.
 - Network_Scanner, Packet Sniffer, DNS_SPOOFER, arp_spoofer and more
 
 Follow for daily security tools!
-    main()
+    
